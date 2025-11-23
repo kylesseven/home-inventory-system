@@ -22,12 +22,6 @@ export class DashboardModule {
             this.breadcrumbSection.style.display = 'none';
         }
         
-        // 额外隐藏物品列表区域，确保它不显示
-        const contentSection = document.querySelector('.content-section');
-        if (contentSection) {
-            contentSection.style.display = 'none';
-        }
-        
         // 显示仪表盘
         if (this.dashboardSection) {
             this.dashboardSection.style.display = 'block';

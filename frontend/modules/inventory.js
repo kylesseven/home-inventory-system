@@ -2,6 +2,7 @@
 
 import eventBus from './eventBus.js';
 import UIHandlersModule from './ui-handlers.js';
+import ConfirmModal from '../components/ConfirmModal.js';
 
 export class InventoryModule {
     constructor(app) {
@@ -24,6 +25,14 @@ export class InventoryModule {
         this.inventoryTableBody = document.getElementById('inventoryTableBody');
         this.items = []; // 存储所有物品数据
         this.storageUnits = []; // 存储所有容器数据
+        
+        // 初始化确认模态框
+        this.deleteConfirmModal = new ConfirmModal(
+            'confirmModal',
+            'confirmOk',
+            'confirmCancel'
+        );
+        
         this.loadItems(); // 加载物品和容器数据
         
         // 绑定上下文到处理方法
@@ -95,11 +104,6 @@ export class InventoryModule {
             }
         });
         
-        // 取消按钮事件
-        document.getElementById('cancelRecordBtn')?.addEventListener('click', () => {
-            this.closeInventoryRecordModal();
-        });
-        
         // 物品名称输入事件
         this.itemNameInput?.addEventListener('input', (e) => {
             this.syncItemIdFromName(e.target.value);
@@ -131,36 +135,32 @@ export class InventoryModule {
                 fetch(`${this.apiBaseUrl}/storage_units`)
             ]);
             
+            // 检查响应是否成功
+            if (!itemsResponse.ok) {
+                throw new Error(`获取物品数据失败: HTTP error! status: ${itemsResponse.status}`);
+            }
+            
+            if (!storageUnitsResponse.ok) {
+                throw new Error(`获取容器数据失败: HTTP error! status: ${storageUnitsResponse.status}`);
+            }
+            
             const itemsResult = await itemsResponse.json();
             const storageUnitsResult = await storageUnitsResponse.json();
             
-            if (itemsResult.success && itemsResult.data) {
-                this.items = itemsResult.data;
-            }
-            
-            if (storageUnitsResult.success && storageUnitsResult.data) {
-                this.storageUnits = storageUnitsResult.data;
-            }
+            this.items = itemsResult.success && itemsResult.data ? itemsResult.data : [];
+            this.storageUnits = storageUnitsResult.success && storageUnitsResult.data ? storageUnitsResult.data : [];
             
             // 填充datalist
             this.populateItemDatalists();
         } catch (error) {
             console.error('获取数据失败:', error);
+            // 确保即使出错也有默认空数组
+            this.items = [];
+            this.storageUnits = [];
         }
     }
     
-    // 加载容器数据
-    async loadStorageUnits() {
-        try {
-            const response = await fetch(`${this.apiBaseUrl}/storage_units`);
-            const result = await response.json();
-            if (result.success && result.data) {
-                this.storageUnits = result.data;
-            }
-        } catch (error) {
-            console.error('获取容器数据失败:', error);
-        }
-    }
+    // 容器数据已通过loadItems方法获取，无需单独加载
     
     // 填充物品名称和ID的datalist
     populateItemDatalists() {
@@ -188,6 +188,11 @@ export class InventoryModule {
     
     // 从物品名称同步物品ID
     syncItemIdFromName(itemName) {
+        // 空值检查
+        if (!itemName || !this.itemIdList || !this.itemIdInput || !this.recordLocationInput) {
+            return;
+        }
+        
         // 过滤出匹配的物品
         const matchedItems = this.items.filter(item => item.name.includes(itemName));
         
@@ -265,9 +270,6 @@ export class InventoryModule {
         // 设置模态框标题
         this.modalTitle.textContent = type === 'in' ? '添加入库记录' : '添加出库记录';
         
-        // 设置记录类型
-        this.recordTypeInput.value = type;
-        
         // 清空表单
         this.form?.reset();
         
@@ -299,7 +301,7 @@ export class InventoryModule {
                     this.syncItemNameFromId(itemId); // 同步物品名称和位置信息
                     this.itemNameInput.readOnly = true;
                     // 自动填充原因信息
-                    this.reasonInput.value = '购入新增';
+                    this.reasonInput.value = type === 'in' ? '购入新增' : '使用';
                 }
                 
                 // 更新datalist
@@ -313,7 +315,7 @@ export class InventoryModule {
                 this.syncItemNameFromId(itemId); // 同步物品名称和位置信息
                 this.itemNameInput.readOnly = true;
                 // 自动填充原因信息
-                this.reasonInput.value = '购入新增';
+                this.reasonInput.value = type === 'in' ? '购入新增' : '使用';
             }
             
             // 更新datalist
@@ -362,11 +364,20 @@ export class InventoryModule {
         const itemIdError = document.getElementById('itemIdError');
         
         // 验证物品ID是否存在
-        if (!this.validateItemId(record.itemId)) {
-            itemIdError.textContent = 'ID不存在';
-            return;
+        if (itemIdError) {
+            if (!this.validateItemId(record.itemId)) {
+                itemIdError.textContent = 'ID不存在';
+                return;
+            }
+            itemIdError.textContent = '';
+        } else {
+            console.warn('itemIdError元素未找到');
+            // 即使没有错误元素，也要验证ID是否存在
+            if (!this.validateItemId(record.itemId)) {
+                alert('物品ID不存在');
+                return;
+            }
         }
-        itemIdError.textContent = '';
         
         try {
             // 发送请求
@@ -409,18 +420,25 @@ export class InventoryModule {
             const response = await fetch(url);
             console.log('响应状态:', response.status);
             
+            // 检查响应是否成功
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            
             const result = await response.json();
             console.log('响应数据:', result);
             
-            if (result.success) {
+            if (result.success && result.data) {
                 this.renderInventoryRecords(result.data);
             } else {
-                console.error('加载库存记录失败:', result.message);
+                console.error('加载库存记录失败:', result.message || '未知错误');
+                this.renderInventoryRecords([]); // 显示空状态
             }
         } catch (error) {
             // 忽略net::ERR_ABORTED错误，这通常是由于页面导航或请求中断导致，不影响实际功能
             if (!error.message.includes('net::ERR_ABORTED')) {
                 console.error('加载库存记录失败:', error);
+                this.renderInventoryRecords([]); // 确保在错误情况下也能显示空状态
             }
         }
     }
@@ -484,12 +502,28 @@ export class InventoryModule {
      * @param {string} recordId - 记录ID
      */
     async deleteRecord(recordId) {
-        try {
-            // 确认删除
-            if (!confirm('确定要删除这条库存记录吗？')) {
-                return;
-            }
+        // 使用通用模态框组件
+        this.deleteConfirmModal.show({
+            title: '确认删除',
+            message: '确定要删除这条库存记录吗？此操作不可撤销。',
+            context: recordId,
+            onConfirm: this.performDeleteRecord.bind(this),
+            onCancel: () => console.log('删除操作已取消')
+        });
+    }
 
+    /**
+     * 执行删除库存记录的实际操作
+     * @param {string} recordId - 记录ID
+     */
+    async performDeleteRecord(recordId) {
+        if (!recordId) {
+            console.error('删除失败：记录ID不能为空');
+            alert('删除失败：记录ID无效');
+            return;
+        }
+        
+        try {
             const response = await fetch(`${this.apiBaseUrl}/inventory/${recordId}`, {
                 method: 'DELETE',
                 headers: {
@@ -498,7 +532,8 @@ export class InventoryModule {
             });
 
             if (!response.ok) {
-                throw new Error('Network response was not ok');
+                const errorMessage = response.status === 404 ? '记录不存在' : `网络错误: ${response.status}`;
+                throw new Error(errorMessage);
             }
 
             const result = await response.json();
@@ -510,11 +545,46 @@ export class InventoryModule {
 
             // 重新加载记录
             await this.loadInventoryRecords();
-
+            
+            // 可选：提供成功反馈
+            console.log('库存记录删除成功');
 
         } catch (error) {
             console.error('删除库存记录失败:', error);
-            alert('删除库存记录失败，请重试');
+            alert(`删除库存记录失败: ${error.message || '请重试'}`);
         }
+    }
+    
+    /**
+     * 销毁模块，清理事件监听器和资源
+     */
+    destroy() {
+        // 销毁确认模态框组件
+        if (this.deleteConfirmModal && typeof this.deleteConfirmModal.destroy === 'function') {
+            this.deleteConfirmModal.destroy();
+        }
+        
+        // 清理引用，帮助垃圾回收
+        this.items = null;
+        this.storageUnits = null;
+        this.inventoryRecords = null;
+        
+        // 清理DOM引用
+        this.modal = null;
+        this.form = null;
+        this.modalTitle = null;
+        this.recordTypeInput = null;
+        this.itemNameInput = null;
+        this.itemIdInput = null;
+        this.recordLocationInput = null;
+        this.quantityInput = null;
+        this.reasonInput = null;
+        this.dateInput = null;
+        this.itemNameList = null;
+        this.itemIdList = null;
+        this.currentQuantityValue = null;
+        this.inventoryTableBody = null;
+        
+        console.log('库存模块资源已清理');
     }
 }

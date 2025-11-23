@@ -35,15 +35,41 @@ export class StorageModule {
                     
                     // 查找容器的实际父级，确保层级关系正确
                     let actualParent = null;
+                    
+                    // 首先尝试通过parentId查找
                     if (container.parentId) {
-                        actualParent = findNodeById(StateModule.getCache('rooms'), container.parentId);
-                    } else if (this.currentParentInfo) {
-                        actualParent = this.currentParentInfo;
+                        // 从所有可能的节点源中查找父节点
+                        const rooms = StateModule.getCache('rooms') || [];
+                        const containers = StateModule.getCache('containers') || [];
+                        
+                        // 先在房间中查找
+                        actualParent = findNodeById(rooms, container.parentId);
+                        
+                        // 如果没找到，在顶层容器中查找
+                        if (!actualParent) {
+                            actualParent = findNodeById(containers, container.parentId);
+                        }
+                    } 
+                    
+                    // 如果没有明确的parentId或查找失败，尝试通过当前父级信息确定关系
+                    if (!actualParent && this.currentParentInfo) {
+                        // 检查当前父级是否确实包含这个容器
+                        if (this.currentParentInfo.containers && Array.isArray(this.currentParentInfo.containers)) {
+                            const isChildContainer = this.currentParentInfo.containers.some(
+                                child => String(child.id) === String(container.id) || String(child._id) === String(container.id)
+                            );
+                            
+                            if (isChildContainer) {
+                                actualParent = this.currentParentInfo;
+                            }
+                        }
                     }
                     
                     // 确保父容器信息已设置到当前容器中
-                    if (actualParent && !container.parent) {
+                    if (actualParent) {
                         container.parent = actualParent;
+                        container.parentId = actualParent.id;
+                        container.parentName = actualParent.name;
                     }
                     
                     // 更新路径显示
@@ -310,10 +336,19 @@ export class StorageModule {
         StateModule.setSelectedStorageContainer(container);
         StateModule.setSelectedNode(container);
         
+        // 查找并设置容器的父级信息 - 这会递归设置整个层级链
+        this.findAndSetContainerParent(container);
+        
         // 更新当前父级信息
         this.currentParentInfo = container;
         
-        // 显示面包屑导航
+        // 强制更新面包屑导航
+        if (UIHandlersModule && typeof UIHandlersModule.updateCurrentPath === 'function') {
+            console.log('更新面包屑导航，当前容器:', container.name);
+            UIHandlersModule.updateCurrentPath(this.app, container);
+        }
+        
+        // 显示面包屑导航区域
         const breadcrumbSection = document.querySelector('.breadcrumb');
         if (breadcrumbSection) {
             breadcrumbSection.style.display = 'block';
@@ -339,6 +374,123 @@ export class StorageModule {
         
         // 更新添加物品按钮状态
         UIHandlersModule.updateAddItemButton(container);
+    }
+    
+    /**
+     * 查找并设置容器的父级信息
+     */
+    findAndSetContainerParent(container) {
+        // 确保容器有id
+        const containerId = container.id || container._id;
+        if (!containerId) return;
+        
+        // 获取所有可能的节点源
+        const rooms = StateModule.getCache('rooms') || [];
+        const containers = StateModule.getCache('containers') || [];
+        
+        // 1. 首先尝试通过parent属性查找（可能已经设置）
+        if (container.parent) {
+            return;
+        }
+        
+        // 2. 然后尝试通过parentId查找所有可能的节点
+        if (container.parentId) {
+            // 构建所有可能的节点数组
+            const allNodes = [...rooms];
+            
+            // 递归收集所有容器
+            const collectAllContainers = (parentContainers) => {
+                parentContainers.forEach(c => {
+                    allNodes.push(c);
+                    if (c.containers && Array.isArray(c.containers) && c.containers.length > 0) {
+                        collectAllContainers(c.containers);
+                    }
+                });
+            };
+            
+            // 收集所有层级的容器
+            collectAllContainers(containers);
+            collectAllContainers(rooms.flatMap(room => room.containers || []));
+            
+            // 查找匹配的父节点
+            const actualParent = allNodes.find(node => 
+                String(node.id || node._id) === String(container.parentId)
+            );
+            
+            if (actualParent) {
+                container.parent = actualParent;
+                container.parentName = actualParent.name;
+                return;
+            }
+        }
+        
+        // 3. 关键改进：使用深度优先搜索查找多层级的容器包含关系
+        // 定义深度优先搜索函数
+        const findParentRecursively = (nodes) => {
+            for (const node of nodes) {
+                if (node.containers && Array.isArray(node.containers)) {
+                    // 检查当前层级的子容器
+                    const matchingChild = node.containers.find(child => 
+                        String(child.id || child._id) === String(containerId)
+                    );
+                    
+                    if (matchingChild) {
+                        return node;
+                    }
+                    
+                    // 递归检查更深层级
+                    const deeperParent = findParentRecursively(node.containers);
+                    if (deeperParent) {
+                        return deeperParent;
+                    }
+                }
+            }
+            return null;
+        };
+        
+        // 首先在房间中查找
+        let actualParent = findParentRecursively(rooms);
+        
+        // 如果没找到，在顶层容器中查找
+        if (!actualParent) {
+            actualParent = findParentRecursively(containers);
+        }
+        
+        // 如果找到父节点，设置完整的层级关系
+        if (actualParent) {
+            container.parent = actualParent;
+            container.parentId = actualParent.id || actualParent._id;
+            container.parentName = actualParent.name;
+            
+            // 递归设置祖父节点信息，确保整个层级链完整
+            this.findAndSetContainerParent(actualParent);
+        }
+        
+        // 4. 兜底：如果仍然找不到父节点，尝试通过findNodeById进行全局查找
+        if (!container.parent && container.parentId) {
+            const allNodes = [...rooms];
+            // 收集所有容器
+            const collectContainers = (parentContainers) => {
+                parentContainers.forEach(c => {
+                    allNodes.push(c);
+                    if (c.containers && Array.isArray(c.containers)) {
+                        collectContainers(c.containers);
+                    }
+                });
+            };
+            collectContainers(containers);
+            
+            const foundNode = findNodeById(allNodes, container.parentId);
+            if (foundNode) {
+                container.parent = foundNode;
+                container.parentName = foundNode.name;
+            }
+        }
+        
+        console.log('容器父节点设置结果:', { 
+            container: container.name, 
+            parent: container.parent ? container.parent.name : '未找到父节点' 
+        });
     }
     
     /**

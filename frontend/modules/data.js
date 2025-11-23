@@ -2,7 +2,6 @@
 
 // 导入工具函数
 import eventBus from './eventBus.js';
-// 删除未使用的导入
 
 /**
  * 将扁平的容器数组转换为嵌套结构
@@ -565,11 +564,34 @@ export async function searchItems(API_BASE, keyword) {
 export async function loadItemStatusConfig(API_BASE) {
     try {
         const response = await fetch(`${API_BASE}/inventory/status-config`);
-        const result = await response.json();
-        // 检查结果是否成功，然后返回数据数组
-        return result.success ? result.data : [];
+        
+        // 检查响应是否成功
+        if (!response.ok) {
+            console.warn(`API请求失败，状态码: ${response.status}`);
+            return [];
+        }
+        
+        // 先获取响应文本，检查是否是HTML
+        const text = await response.text();
+        
+        // 简单检查是否是HTML响应
+        if (text.trim().startsWith('<') && text.includes('<!DOCTYPE')) {
+            console.warn('API返回HTML而不是JSON，使用空数组');
+            return [];
+        }
+        
+        // 尝试解析JSON
+        try {
+            const result = JSON.parse(text);
+            // 检查结果是否成功，然后返回数据数组
+            return result.success && result.data ? result.data : [];
+        } catch (parseError) {
+            console.error('JSON解析错误:', parseError);
+            console.warn('响应内容:', text.substring(0, 100) + '...');
+            return [];
+        }
     } catch (error) {
-        console.error('Error loading item status config:', error);
+        console.error('获取物品状态配置时出错:', error.message);
         return [];
     }
 }

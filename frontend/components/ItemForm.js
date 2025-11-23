@@ -109,6 +109,36 @@ export class ItemForm {
                 console.error('❌ 获取物品数据失败:', error);
             }
         }
+        
+        // 获取物品状态配置信息，用于填充规格和预警阈值
+        let updatedItem = { ...item };
+        try {
+            // 尝试从API获取物品状态配置
+            const response = await fetch(`${this.apiBase}/inventory/status-config`);
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success && result.data) {
+                    // 查找当前物品的状态配置
+                    const itemConfig = result.data.find(config => 
+                        config._id === item._id || config.id === item._id
+                    );
+                    
+                    // 如果找到配置，更新预警阈值信息
+                    if (itemConfig) {
+                        // 更新预警阈值信息
+                        if (itemConfig.stockAlert) {
+                            updatedItem.stockAlert = itemConfig.stockAlert;
+                        }
+                        if (itemConfig.expiryWarning) {
+                            updatedItem.expiryWarning = itemConfig.expiryWarning;
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('❌ 获取物品状态配置失败:', error);
+            // 继续使用原始物品数据
+        }
 
         // 获取所有容器数据
         let allContainers = [];
@@ -163,8 +193,8 @@ export class ItemForm {
         // 供datalist使用的容器选项
         this.containers = allContainerOptions;
 
-        const title = `编辑物品 - ${item.name}`;
-        const formHtml = this.getFormHtml(item, containerName);
+        const title = `编辑物品 - ${updatedItem.name}`;
+        const formHtml = this.getFormHtml(updatedItem, containerName);
         
         this.setContent(title, formHtml);
         this.bindFormEvents();
@@ -234,7 +264,7 @@ export class ItemForm {
                     </div>
                     <div class="form-group">
                         <label for="itemSpec">规格</label>
-                        <input type="text" id="itemSpec" value="${item ? this.escapeHtml(item.spec || '') : ''}" placeholder="如: 500ml、1kg、10cm*20cm等">
+                        <input type="text" id="itemSpec" value="${item ? item.specification : '1'}" placeholder="如: 500ml、1kg、10cm*20cm等">
                     </div>
                 </div>
 

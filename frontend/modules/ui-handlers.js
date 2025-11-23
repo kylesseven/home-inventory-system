@@ -2,7 +2,7 @@ import HomeInventoryApp from './app-core.js';
 import StateModule from './state.js';
 import eventBus from './eventBus.js';
 import { searchItems, loadRooms } from './data.js';
-import { findNodeById, collectAllItems, isContainerNode, getDirectSubContainers } from './utils.js';
+import { findNodeById, collectAllItems, isContainerNode, isRoomNode, getDirectSubContainers } from './utils.js';
 // 删除未使用的导入
 
 /**
@@ -706,146 +706,291 @@ const UIHandlersModule = {
         // 递归查找所有父节点并返回 root-to-current 顺序的路径，使用 seenIds 避免处理重复节点
         const seenIds = new Set();
         
-        const findPathRecursively = (currentNode) => {
-            // 快速返回无效节点
-            if (!currentNode?.id || seenIds.has(currentNode.id)) return [];
-            seenIds.add(currentNode.id);
-
-            // 统一查找父节点的逻辑
-            const findParent = (id) => {
-                const rooms = StateModule.getCache('rooms') || [];
-                const containers = StateModule.getCache('containers') || [];
-                
-                // 先在所有容器中查找
-                let parent = findNodeById(containers, id);
-                if (parent) return parent;
-                
-                // 再在所有房间中查找
-                parent = findNodeById(rooms, id);
-                if (parent) return parent;
-                
-                return null;
+        // 获取所有可能的节点源，确保收集到所有层级的容器
+        const getAllNodesRecursively = () => {
+            const rooms = StateModule.getCache('rooms') || [];
+            const containers = StateModule.getCache('containers') || [];
+            
+            // 合并房间和容器，并递归收集所有嵌套容器
+            const allNodes = [];
+            
+            // 辅助函数：递归收集所有容器（包括嵌套的）
+            const collectAllContainers = (parentContainers, parentNode = null) => {
+                parentContainers.forEach(container => {
+                    // 确保容器有id属性，处理可能的数据不一致
+                    if (!container.id && container._id) {
+                        container.id = container._id;
+                    }
+                    
+                    // 如果有父节点信息，确保设置到容器上
+                    if (parentNode) {
+                        if (!container.parentId) {
+                            container.parentId = parentNode.id;
+                        }
+                        if (!container.parentName) {
+                            container.parentName = parentNode.name;
+                        }
+                        if (!container.parent) {
+                            container.parent = parentNode;
+                        }
+                    }
+                    
+                    allNodes.push(container);
+                    
+                    // 递归收集子容器
+                    if (container.containers && Array.isArray(container.containers) && container.containers.length > 0) {
+                        collectAllContainers(container.containers, container);
+                    }
+                });
             };
-
-            let parentPath = [];
-            const parentId = currentNode.parentId;
-            if (parentId) {
-                const parentNode = findParent(parentId);
-                if (parentNode) parentPath = findPathRecursively(parentNode);
-            }
-
-            return [...parentPath, { id: currentNode.id, name: currentNode.name }];
+            
+            // 添加所有房间
+            rooms.forEach(room => {
+                if (!room.id && room._id) {
+                    room.id = room._id;
+                }
+                
+                allNodes.push(room);
+                
+                // 收集房间下的所有容器
+                if (room.containers && Array.isArray(room.containers) && room.containers.length > 0) {
+                    collectAllContainers(room.containers, room);
+                }
+            });
+            
+            // 添加顶层容器（不属于任何房间的容器）
+            collectAllContainers(containers);
+            
+            return allNodes;
         };
         
+        // 增强的父节点查找逻辑，确保能找到多层级的父节点
+        const findParentNode = (currentNode) => {
+            // 确保当前节点有id
+            const currentId = currentNode.id || currentNode._id;
+            if (!currentId) return null;
+            
+            const allNodes = getAllNodesRecursively();
+            
+            // 1. 首先尝试通过直接的parent属性查找（可能是已经设置好的）
+            if (currentNode.parent) {
+                return currentNode.parent;
+            }
+            
+            // 2. 然后尝试通过parentId查找
+            if (currentNode.parentId) {
+                for (const node of allNodes) {
+                    const nodeId = node.id || node._id;
+                    if (String(nodeId) === String(currentNode.parentId)) {
+                        return node;
+                    }
+                }
+            }
+            
+            // 3. 关键改进：通过检查哪个节点包含当前节点作为子容器来查找父节点
+            //    遍历所有节点及其所有层级的子容器
+            for (const node of allNodes) {
+                if (node.containers && Array.isArray(node.containers)) {
+                    // 使用深度优先搜索检查所有层级的子容器
+                    const hasChildContainer = (containers) => {
+                        for (const child of containers) {
+                            const childId = child.id || child._id;
+                            if (String(childId) === String(currentId)) {
+                                return true;
+                            }
+                            // 递归检查更深层级
+                            if (child.containers && Array.isArray(child.containers) && child.containers.length > 0) {
+                                if (hasChildContainer(child.containers)) {
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    };
+                    
+                    // 检查当前节点是否包含目标容器作为任何层级的子容器
+                    if (hasChildContainer(node.containers)) {
+                        // 找到包含关系后，为当前节点设置父节点信息
+                        currentNode.parentId = node.id;
+                        currentNode.parentName = node.name;
+                        currentNode.parent = node;
+                        return node;
+                    }
+                }
+            }
+            
+            // 4. 兜底：使用utils中的findNodeById函数进行全局查找
+            if (currentNode.parentId) {
+                const allNodes = [...(StateModule.getCache('rooms') || []), ...(StateModule.getCache('containers') || [])];
+                return findNodeById(allNodes, currentNode.parentId);
+            }
+            
+            return null;
+        };
+        
+        // 改进的路径递归查找函数
+        const findPathRecursively = (currentNode) => {
+            // 快速返回无效节点
+            if (!currentNode || seenIds.has(currentNode.id || currentNode._id)) {
+                return [];
+            }
+            
+            const nodeId = currentNode.id || currentNode._id;
+            seenIds.add(nodeId);
+            
+            let parentPath = [];
+            const parentNode = findParentNode(currentNode);
+            
+            // 递归查找父节点路径
+            if (parentNode) {
+                parentPath = findPathRecursively(parentNode);
+            }
+            
+            // 构建当前节点的路径段
+            return [...parentPath, { 
+                id: nodeId, 
+                name: currentNode.name || '未命名容器'
+            }];
+        };
+        
+        // 确保节点有id
+        if (!node.id && node._id) {
+            node.id = node._id;
+        }
+        
         let path;
-        if (node.id === 'overview') {
-            // 总览节点
-            path = [node];
+        const isOverviewMode = StateModule.getIsInStorageOverview();
+        const currentNodeId = StateModule.getCurrentNodeId();
+        
+        // 调试信息
+        console.log('总览状态检查:', {
+            isOverviewMode,
+            currentNodeId,
+            nodeId: node.id
+        });
+        
+        if (node.id === 'overview' || currentNodeId === 'overview') {
+            // 总览节点的特殊处理
+            path = [{ id: 'overview', name: '总览' }];
         } else {
-            // 普通节点
+            // 为普通节点生成路径
             path = findPathRecursively(node);
             
-            // 添加总览级别
-            if (StateModule.getIsInStorageOverview()) {
+            // 确保路径不为空
+            if (!path || path.length === 0) {
+                console.warn('无法生成路径，使用默认路径', node);
+                path = [{ id: node.id, name: node.name || '未知位置' }];
+            }
+            
+            // 修复总览层级：始终添加总览作为根层级，除非明确在总览页面且显示的就是总览节点
+            // 这样确保面包屑导航始终包含总览层级
+            if (!isOverviewMode || node.id !== 'overview') {
                 path.unshift({ id: 'overview', name: '总览' });
             }
         }
         
+        console.log('生成的面包屑路径:', path);
         return path;
     },
     
     /**
-     * 根据ID查找节点
+     * 根据ID导航到指定的路径段（容器或房间）
      */
     async navigateToPathSegment(app, id) {
         try {
+            // 首先检查是否是总览页面
             if (id === 'home' || id === 'storage_root' || id === 'overview') {
                 // 导航到总览时清除选中的容器，确保总览模式正确显示
                 StateModule.setSelectedStorageContainer(null);
                 StateModule.setSelectedNode(null);
                 StateModule.setCurrentNodeId('overview');
+                StateModule.setIsInStorageOverview(true);
                 
-                // 为总览导航添加数据刷新逻辑
+                // 导航到总览
+                await app.showStorageOverview();
+                
+                // 为总览导航添加数据刷新逻辑（在显示概览后刷新，避免状态冲突）
                 if (app.storageModule && typeof app.storageModule.loadStorageData === 'function') {
                     await app.storageModule.loadStorageData();
                 }
                 
-                // 导航到总览
-                await app.showStorageOverview();
                 return;
             }
             
             // 确保存储模块已初始化
             if (!app.storageModule) {
-                // 如果存储模块未初始化，先调用showStorageOverview来初始化它
-                await app.showStorageOverview();
-                // 初始化后再次检查
-                if (!app.storageModule) {
-                    console.error('navigateToPathSegment: 初始化存储模块失败');
-                    return;
-                }
+                console.error('navigateToPathSegment: 存储模块未初始化');
+                return;
+            }
+            
+            // 确保容器数据是最新的
+            if (typeof app.storageModule.loadStorageData === 'function') {
+                await app.storageModule.loadStorageData();
             }
             
             // 获取所有可能的节点源
             const allRooms = StateModule.getCache('rooms') || [];
-            console.log('navigateToPathSegment: 所有房间:', allRooms);
             const allContainers = StateModule.getCache('containers') || [];
-            console.log('navigateToPathSegment: 所有容器:', allContainers);
-            const allNodes = [...allRooms, ...allContainers];
-            console.log('navigateToPathSegment: 所有节点:', allNodes);
             
-            // 尝试找到对应的容器节点
-            let targetContainer = findNodeById(allNodes, id, allRooms);
+            // 改进的节点查找逻辑：先在所有房间中查找（可能是房间）
+            let targetNode = findNodeById(allRooms, id, allRooms);
             
-            // 如果还是没找到，尝试直接在缓存的所有容器中查找
-            if (!targetContainer) {
-                targetContainer = allContainers.find(container => 
-                    String(container.id) === String(id) || 
-                    String(container._id) === String(id) ||
-                    String(container.name) === String(id) // 作为最后的尝试，按名称匹配
+            // 如果房间中没找到，再在所有容器中查找
+            if (!targetNode) {
+                console.log('navigateToPathSegment: 在房间中未找到，尝试在容器中查找');
+                targetNode = findNodeById(allContainers, id, allRooms);
+            }
+            
+            // 如果还是没找到，使用更广泛的查找方法
+            if (!targetNode) {
+                console.log('navigateToPathSegment: 使用直接比较查找目标节点');
+                // 组合所有节点
+                const allNodes = [...allRooms, ...allContainers];
+                targetNode = allNodes.find(node => 
+                    String(node.id) === String(id) || 
+                    String(node._id) === String(id)
                 );
             }
             
-            // 如果找到容器，更新视图
-            if (targetContainer) {
-                console.log('navigateToPathSegment: 找到目标容器:', targetContainer.name, targetContainer.id || targetContainer._id);
+            // 如果找到目标节点，更新视图
+            if (targetNode) {
+                console.log('navigateToPathSegment: 找到目标节点:', targetNode.name, targetNode.id || targetNode._id);
                 
-                // 先更新状态，使用原始容器对象
-                StateModule.setCurrentNodeId(targetContainer.id || targetContainer._id);
-                StateModule.setSelectedStorageContainer(targetContainer);
-                StateModule.setSelectedNode(targetContainer);
+                // 设置状态为非总览模式
+                StateModule.setIsInStorageOverview(false);
                 
-                // 确保容器数据是最新的，先重新加载存储数据
-                if (app.storageModule && typeof app.storageModule.loadStorageData === 'function') {
-                    await app.storageModule.loadStorageData();
+                // 更新状态
+                StateModule.setCurrentNodeId(targetNode.id || targetNode._id);
+                StateModule.setSelectedNode(targetNode);
+                
+                // 区分处理房间和容器
+                if (isRoomNode(targetNode)) {
+                    // 如果是房间，显示房间内容
+                    UIHandlersModule.showRoomContainers(app, targetNode);
+                } else if (isContainerNode(targetNode)) {
+                    // 如果是容器，设置选中的容器并显示内容
+                    StateModule.setSelectedStorageContainer(targetNode);
+                    
+                    // 调用正确的方法显示容器内容
+                    if (typeof app.storageModule.showContainerContents === 'function') {
+                        app.storageModule.showContainerContents(targetNode);
+                    } else if (typeof UIHandlersModule.showContainerContents === 'function') {
+                        UIHandlersModule.showContainerContents(app, targetNode);
+                    }
                 }
                 
-                // 重新获取完整的容器数据
-                const updatedContainers = StateModule.getCache('containers') || [];
-                const updatedRooms = StateModule.getCache('rooms') || [];
-                const allUpdatedNodes = [...updatedContainers, ...updatedRooms];
-                const fullTargetContainer = findNodeById(allUpdatedNodes, targetContainer.id || targetContainer._id);
-                
-                // 显示容器内容，使用完整的容器对象
-                app.storageModule.showContainerContents(fullTargetContainer || targetContainer);
-                
                 // 确保面包屑导航更新
-                UIHandlersModule.updateCurrentPath(app, fullTargetContainer || targetContainer);
+                UIHandlersModule.updateCurrentPath(app, targetNode);
             } else {
-                console.error(`navigateToPathSegment: 未找到ID为${id}的容器节点`);
-                // 即使未找到目标容器，也应该确保界面状态正确
-                StateModule.setSelectedStorageContainer(null);
-                StateModule.setSelectedNode(null);
-                StateModule.setCurrentNodeId('overview');
-                await app.showStorageOverview();
+                console.error(`navigateToPathSegment: 未找到ID为${id}的节点`);
+                // 未找到目标节点时，保持当前状态，不要自动跳转到总览
+                // 这样可以避免用户体验中断
+                UIHandlersModule.showMessage(`无法导航到指定位置`, 'error');
             }
         } catch (error) {
             console.error('navigateToPathSegment: 导航过程中发生错误:', error);
-            // 错误情况下也应该回到总览页面
-            StateModule.setSelectedStorageContainer(null);
-            StateModule.setSelectedNode(null);
-            StateModule.setCurrentNodeId('overview');
-            await app.showStorageOverview();
+            // 错误情况下保持当前状态，显示错误消息
+            UIHandlersModule.showMessage(`导航出错: ${error.message}`, 'error');
         }
     },
     
