@@ -3,14 +3,24 @@
 <head>
     <meta charset="UTF-8">
     <title>自动跳转中...</title>
-    <!-- 核心跳转配置：0秒后跳转到目标网站（可修改延迟时间，比如3秒则写"3;url=..."） -->
-    <meta http-equiv="refresh" content="0;url=127.0.0.1:5500">
 </head>
 <body>
-    <!-- 可选：显示跳转提示（若用户网络慢或禁用自动跳转时可见） -->
     <div style="text-align: center; margin-top: 100px;">
         正在跳转，请稍候...<br>
-        若未自动跳转，请<a href="https://www.baidu.com">点击这里</a>
+        若未自动跳转，请<a href="http://127.0.0.1:5500">点击这里</a>
     </div>
+
+    <script>
+        // 方式1：立即跳转（替换为你的目标URL）
+        window.location.href = "http://127.0.0.1:5500";
+
+        // 方式2：延迟跳转（比如2秒后跳转）
+        // setTimeout(() => {
+        //     window.location.href = "https://www.baidu.com";
+        // }, 2000);
+
+        // 方式3：跳转后不保留当前页面历史（用户点击返回不会回到此页）
+        // window.location.replace("https://www.baidu.com");
+    </script>
 </body>
 </html>
